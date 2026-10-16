@@ -4,7 +4,7 @@ A Python script that computes the **tension development length** of reinforcing 
 
 **Units:** psi and inches.
 
-Development Length Calculator: https://sakibzyx.github.io/Development-Length/
+**Development Length Calculator:** https://sakibzyx.github.io/Development-Length/
 
 ## Features
 
