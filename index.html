@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Development Length Calculator</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1b1f24;--mut:#5b6670;--bd:#d6dbe0;--ac:#1f6feb;--ok:#1a7f37;--bad:#cf222e;--wn:#9a6700}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1318;--card:#171c22;--tx:#e6e9ec;--mut:#98a2ad;--bd:#2b333b;--ac:#58a6ff;--ok:#3fb950;--bad:#f85149;--wn:#d29922}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:16px}h1{font-size:1.3rem;margin:.2em 0}
+.sub{color:var(--mut);margin:0 0 12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px}
+.card h2{font-size:1rem;margin:0 0 8px}
+label{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:5px 0;font-size:.9rem}
+input,select{width:120px;padding:4px 6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx);font:inherit}
+input[type=checkbox]{width:auto}
+pre{white-space:pre-wrap;margin:0;font:13px/1.5 ui-monospace,monospace}
+.res h3{font-size:.95rem;margin:10px 0 4px;color:var(--ac)}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.wn{color:var(--wn)}
+small{color:var(--mut)}
+</style>
+</head>
+<body>
+<main>
+<h1>Development Length Calculator</h1>
+<p class="sub">ACI 318 / Nilson-Darwin-Dolan Ch. 6 · psi, inch · results update as you type</p>
+<div class="grid">
+ <div class="card"><h2>General</h2>
+  <label>Mode <select id="mode"><option>all</option><option>straight</option><option>hook</option><option>headed</option><option>compression</option><option>splice</option></select></label>
+  <label>fy (psi) <input id="fy" type="number" value="60000"></label>
+  <label>f'c (psi) <input id="fc" type="number" value="4000"></label>
+  <label>Bar No. <select id="bar_no"></select></label>
+  <label>Concrete below bar (in.) <input id="concrete_below_bar" type="number" value="8" step="any"></label>
+  <label>Coating <select id="coating"><option>uncoated</option><option>galvanized</option><option>epoxy</option><option>dual</option></select></label>
+  <label>λ <select id="lam"><option value="1">1.0 normalweight</option><option value="0.75">0.75 lightweight</option></select></label>
+  <label>Available length (in.) <input id="available" type="number" step="any" placeholder="optional"></label>
+ </div>
+ <div class="card"><h2>Excess reinforcement / splice</h2>
+  <label>As required (in²) <input id="As_req" type="number" step="any" placeholder="optional"></label>
+  <label>As provided (in²) <input id="As_prov" type="number" step="any" placeholder="optional"></label>
+  <label>No reduction case <input id="no_reduction" type="checkbox"></label>
+  <label>% bars spliced (splice) <input id="pct_spliced" type="number" value="100"></label>
+  <h2 style="margin-top:12px">Straight bar</h2>
+  <label>Clear spacing (in.) <input id="clear_spacing" type="number" value="2.5" step="any"></label>
+  <label>Clear cover (in.) <input id="clear_cover" type="number" value="2" step="any"></label>
+  <label>Stirrups OK <input id="stirrups_ok" type="checkbox" checked></label>
+  <label>ACI 408 (No.7+ values) <input id="aci408" type="checkbox"></label>
+ </div>
+ <div class="card"><h2>Hook</h2>
+  <label>Hook type <select id="hook_type"><option>90</option><option>180</option><option>135</option></select></label>
+  <label>Stirrup/tie hook <input id="stirrup_hook" type="checkbox"></label>
+  <label>Side cover (in.) <input id="side_cover" type="number" value="3" step="any"></label>
+  <label>Extension cover (in.) <input id="ext_cover" type="number" value="2" step="any"></label>
+  <label>Ties along ldh, s ≤ 3db <input id="hook_conf" type="checkbox"></label>
+  <label>Ties on extension (90°) <input id="hook_ext_conf" type="checkbox"></label>
+  <label>Discontinuous end, cover &lt; 2.5 <input id="disc_end" type="checkbox"></label>
+  <h2 style="margin-top:12px">Headed bar</h2>
+  <label>Net bearing area (in²) <input id="Abrg" type="number" step="any" placeholder="optional"></label>
+  <label>Obstruction dist. (in.) <input id="obstruction" type="number" step="any" placeholder="optional"></label>
+ </div>
+</div>
+<div class="card res" style="margin-top:12px"><h2>Results</h2><div id="out"></div></div>
+<p><small>For learning and preliminary checks only. Verify against the governing code edition.</small></p>
+</main>
+<script src="calc.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+[3,4,5,6,7,8,9,10,11,14,18].forEach(n => $('bar_no').add(new Option('#' + n, n, n === 8, n === 8)));
+let A10 = null;
+const num = id => $(id).value === '' ? null : +$(id).value;
+function run() {
+  const p = {};
+  document.querySelectorAll('input,select').forEach(e => {
+    p[e.id] = e.type === 'checkbox' ? e.checked : e.type === 'number' ? num(e.id) : e.value;
+  });
+  p.lam = +p.lam; p.bar_no = +p.bar_no; p.hook_type = +p.hook_type;
+  const r = calc(p, A10), el = $('out');
+  let h = '<pre>' + r.head.join('\n') + '</pre>';
+  r.out.forEach(s => {
+    h += '<h3>' + s.title + '</h3><pre>' + s.lines.map(l =>
+      l.includes('NOT OK') ? '<span class="bad">' + l + '</span>' : l.includes('→ OK') ? '<span class="ok">' + l + '</span>' : l).join('\n') + '</pre>';
+  });
+  if (r.warnings.length) h += '<h3 class="wn">Warnings</h3><pre class="wn">' + r.warnings.map(w => '* ' + w).join('\n') + '</pre>';
+  el.innerHTML = h;
+}
+document.addEventListener('input', run); document.addEventListener('change', run);
+fetch('table_A10.csv').then(r => r.text()).then(t => { A10 = parseA10(t); run(); }).catch(run);
+run();
+</script>
+</body>
+</html>
