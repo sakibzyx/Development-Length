@@ -1,5 +1,5 @@
 """
-Development Length Calculator  (ACI 318 / Nilson-Darwin-Dolan, Chapter 6)
+Development Length Calculator  (ACI 318 / Design of Concrete Structure, Nilson-Darwin-Dolan, Chapter 6, Edition 15)
 Units: psi, inch
   [1] Straight bar - Simplified Eqs. (6.5a, 6.5b) / Table 6.1
   [2] Straight bar - Table A.10  (lookup from table_A10.csv)
