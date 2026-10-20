@@ -1,6 +1,6 @@
 # Development Length Calculator
 
-A Python script that computes the **development length** of reinforcing bars in reinforced concrete (tension and compression), following ACI 318 (as presented in Nilson–Darwin–Dolan, Chapter 6, Edition 15).
+A Python script that computes the **development length** of reinforcing bars in reinforced concrete (tension and compression), following ACI 318 (as presented in Design of Concrete Structure, Nilson–Darwin–Dolan, Edition 15, Chapter 6).
 
 **Units:** psi and inches.
 
