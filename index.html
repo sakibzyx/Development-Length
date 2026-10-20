@@ -47,6 +47,8 @@ small{color:var(--mut)}
   <label>Clear cover (in.) <input id="clear_cover" type="number" value="2" step="any"></label>
   <label>Stirrups OK <input id="stirrups_ok" type="checkbox" checked></label>
   <label>ACI 408 (No.7+ values) <input id="aci408" type="checkbox"></label>
+  <h2 style="margin-top:12px">Compression</h2>
+  <label>Confined (spiral / ties ≤ 4 in.) <input id="comp_conf" type="checkbox"></label>
  </div>
  <div class="card"><h2>Hook</h2>
   <label>Hook type <select id="hook_type"><option>90</option><option>180</option><option>135</option></select></label>
@@ -68,25 +70,32 @@ small{color:var(--mut)}
 <script>
 const $ = id => document.getElementById(id);
 [3,4,5,6,7,8,9,10,11,14,18].forEach(n => $('bar_no').add(new Option('#' + n, n, n === 8, n === 8)));
-let A10 = null;
+let A10 = null, A11 = null;
 const num = id => $(id).value === '' ? null : +$(id).value;
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 function run() {
   const p = {};
   document.querySelectorAll('input,select').forEach(e => {
     p[e.id] = e.type === 'checkbox' ? e.checked : e.type === 'number' ? num(e.id) : e.value;
   });
   p.lam = +p.lam; p.bar_no = +p.bar_no; p.hook_type = +p.hook_type;
-  const r = calc(p, A10), el = $('out');
-  let h = '<pre>' + r.head.join('\n') + '</pre>';
+  const r = calc(p, A10, A11), el = $('out');
+  let h = '<pre>' + r.head.map(esc).join('\n') + '</pre>';
   r.out.forEach(s => {
-    h += '<h3>' + s.title + '</h3><pre>' + s.lines.map(l =>
-      l.includes('NOT OK') ? '<span class="bad">' + l + '</span>' : l.includes('→ OK') ? '<span class="ok">' + l + '</span>' : l).join('\n') + '</pre>';
+    h += '<h3>' + esc(s.title) + '</h3><pre>' + s.lines.map(l => {
+      const e = esc(l);
+      return l.includes('NOT OK') ? '<span class="bad">' + e + '</span>' : l.includes('→ OK') ? '<span class="ok">' + e + '</span>' : e;
+    }).join('\n') + '</pre>';
   });
-  if (r.warnings.length) h += '<h3 class="wn">Warnings</h3><pre class="wn">' + r.warnings.map(w => '* ' + w).join('\n') + '</pre>';
+  if (r.warnings.length) h += '<h3 class="wn">Warnings</h3><pre class="wn">' + r.warnings.map(w => '* ' + esc(w)).join('\n') + '</pre>';
   el.innerHTML = h;
 }
 document.addEventListener('input', run); document.addEventListener('change', run);
-fetch('table_A10.csv').then(r => r.text()).then(t => { A10 = parseA10(t); run(); }).catch(run);
+const load = (file, parse) => fetch(file)
+  .then(r => { if (!r.ok) throw new Error(file); return r.text(); })
+  .then(parse).catch(() => null);
+Promise.all([load('table_A10.csv', parseA10), load('table_A11.csv', parseA11)])
+  .then(([a, b]) => { A10 = a; A11 = b; run(); });
 run();
 </script>
 </body>
