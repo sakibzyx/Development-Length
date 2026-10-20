@@ -1,11 +1,12 @@
 """
 Development Length Calculator  (ACI 318 / Nilson-Darwin-Dolan, Chapter 6)
 Units: psi, inch
-
   [1] Straight bar - Simplified Eqs. (6.5a, 6.5b) / Table 6.1
   [2] Straight bar - Table A.10  (lookup from table_A10.csv)
   [3] Standard hook - Eq. (6.6)  + hook dimensions (Fig. 6.9, Table 6.2)
   [4] Headed bar    - Eq. (6.7)  / Table 6.3
+  [5] Bar in compression - Eqs. (6.10a, 6.10b) / Table 6.4  (ACI 25.4.9)
+  [6] Bar in compression - Table A.11  (lookup from table_A11.csv, compared with [5])
 """
 import csv
 import math
@@ -13,10 +14,11 @@ import os
 
 # Input parameters
 
-mode = "all"               # "straight" | "hook" | "headed" | "all"
+mode = "all"               # "straight" | "hook" | "headed" | "compression" | "all"
 available_length = None    # in. - length actually available for the selected mode
                            # (straight: from critical section; hook: embedment past the
-                           #  critical section; headed: bearing face to critical section)
+                           #  critical section; headed: bearing face to critical section;
+                           #  compression: embedment length of the straight bar)
                            # None -> no OK / NOT OK check
 
 # Common
@@ -25,22 +27,22 @@ fc = 4000            # psi  - concrete f'c
 bar_no = 8           # US bar no. (3,4,5,6,7,8,9,10,11,14,18)
 
 concrete_below_bar = 8.0   # in. - depth of fresh concrete placed below the bar
-                           # (> 12 in. -> top bar, ψt = 1.3)
+                           # (> 12 in. -> top bar, psi_t = 1.3)
 coating = "uncoated"       # "uncoated" | "galvanized" | "epoxy" | "dual"
                            # (dual = zinc and epoxy dual-coated)
 
-lam = 1.0                  # λ : normalweight = 1.0, lightweight = 0.75
+lam = 1.0                  # lambda : normalweight = 1.0, lightweight = 0.75
                            # (if fct is specified, calculate it yourself and enter it:
-                           #  λ = fct/(6.7*sqrt(fcm)) <= 1.0)
+                           #  lambda = fct/(6.7*sqrt(fcm)) <= 1.0)
 
-# ---- Reinforcement in excess (As,required / As,provided) ----
-As_required = None         # in²  (None -> no reduction)
-As_provided = None         # in²
+# Reinforcement in excess (As,required / As,provided)
+As_required = None         # in2  (None -> no reduction)
+As_provided = None         # in2
 no_reduction_case = False  # True: anchorage/development for fy specifically
                            # required, or Seismic Design Category D, E, F
                            # -> reduction not applicable
 
-# ---- Straight bar : spacing / cover ----
+# Straight bar : spacing / cover
 clear_spacing = 2.5        # in. - clear spacing of bars being developed/spliced
 clear_cover = 2.0          # in. - clear cover
 stirrups_ok = True         # stirrups/ties throughout ld >= Code minimum?
@@ -48,22 +50,30 @@ USE_ACI408 = False         # True -> ACI 408: use No.7+ formulas/values for all 
 
 CSV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "table_A10.csv")
+CSV_FILE_A11 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "table_A11.csv")
 
-# ---- Hooked bar (Eq. 6.6) ----
+# Hooked bar (Eq. 6.6)
 hook_type = 90             # 90 | 180   (135 only for stirrups/ties)
 is_stirrup_hook = False    # True -> only hook dimensions are shown (stirrup/tie)
 side_cover = 3.0           # in. - side cover (normal to plane of hook)
-ext_cover = 2.0            # in. - cover on bar extension of a 90° hook
+ext_cover = 2.0            # in. - cover on bar extension of a 90 deg hook
 hook_confined_along_ldh = False  # ties/stirrups along ldh (perpendicular to ldh), s <= 3db?
-hook_ext_confined = False        # (90° only) bar extension beyond hook, including the
+hook_ext_confined = False        # (90 deg only) bar extension beyond hook, including the
                                  # bend, enclosed by ties (perpendicular to tail), s <= 3db?
 discontinuous_end_small_cover = False  # discontinuous end with both side cover and
                                        # top/bottom cover < 2.5 in.?
 
-# ---- Headed bar (Eq. 6.7) ----
-head_net_bearing_area = None  # in² - net bearing area Abrg of head (None = not checked)
+# Headed bar (Eq. 6.7)
+head_net_bearing_area = None  # in2 - net bearing area Abrg of head (None = not checked)
 obstruction_dist = None       # in. - obstruction of deformations, from bearing face
                               # (None = no obstruction)
+
+# Bar in compression (Eqs. 6.10a, 6.10b / Table 6.4)
+comp_confined = False      # True -> bar enclosed by spiral (>= 1/4 in. dia, pitch <= 4 in.)
+                           #         or by No.4 (No.13) ties spaced <= 4 in. c/c
+                           #         -> psi_r = 0.75
+                           # False -> psi_r = 1.0
 
 # Calculation
 BAR_DIA = {3: 0.375, 4: 0.500, 5: 0.625, 6: 0.750, 7: 0.875, 8: 1.000,
@@ -145,7 +155,7 @@ def load_table_a10(path=CSV_FILE):
 def _bracket(values, x, name):
     values = sorted(values)
     if x < values[0] or x > values[-1]:
-        raise ValueError(f"{name} = {x} is outside the range of Table A.10 "
+        raise ValueError(f"{name} = {x} is outside the range of the table "
                          f"({values[0]}-{values[-1]})")
     return (max(v for v in values if v <= x),
             min(v for v in values if v >= x))
@@ -180,17 +190,17 @@ def table_a10():
 def hook_factors():
     pe = 1.2 if is_epoxy else 1.0
 
-    # ψc : No.11 and smaller, side cover >= 2.5 in., and for 90° hooks
-    #      cover on bar extension beyond hook >= 2 in.
+    # psi_c : No.11 and smaller, side cover >= 2.5 in., and for 90 deg hooks
+    #         cover on bar extension beyond hook >= 2 in.
     cover_ok = (bar_no <= 11 and side_cover >= 2.5 and
                 (hook_type != 90 or ext_cover >= 2.0))
     pc = 0.7 if cover_ok else 1.0
 
-    # ψr : confining reinforcement factor
+    # psi_r : confining reinforcement factor
     pr = 1.0
     if discontinuous_end_small_cover:
         # ACI 25.4.3.3: closed ties/stirrups (s <= 3db) are mandatory along
-        # the full ldh, and ψr = 0.8 does not apply
+        # the full ldh, and psi_r = 0.8 does not apply
         if not hook_confined_along_ldh:
             warnings.append("Discontinuous end (side and top/bottom cover < 2.5 in.): "
                             "closed ties/stirrups (s <= 3db, first one within 2db of "
@@ -228,7 +238,7 @@ def hook_dimensions():
         elif hook_type == 180:
             ext = max(4 * db, 2.5)
         else:
-            warnings.append("Standard hook for main bars is only 90° or 180°")
+            warnings.append("Standard hook for main bars is only 90 or 180 deg")
             ext = None
     else:   # stirrup / tie
         if hook_type == 90:
@@ -238,7 +248,7 @@ def hook_dimensions():
         else:
             ext = max(4 * db, 2.5)
         if hook_type in (135, 180) and bar_no > 8:
-            warnings.append("Stirrup/tie 135°/180° hooks are only for No. 8 and smaller bars")
+            warnings.append("Stirrup/tie 135/180 deg hooks are only for No. 8 and smaller bars")
         if hook_type == 90 and bar_no > 8:
             warnings.append("Stirrup/tie hooks are only for No. 8 and smaller bars")
     return D, ext
@@ -265,14 +275,57 @@ def headed():
     if head_net_bearing_area is None:
         warnings.append("Headed bar: Abrg >= 4Ab not checked (bearing area not given)")
     elif head_net_bearing_area < 4 * Ab:
-        warnings.append(f"Headed bar: Abrg = {head_net_bearing_area} in² < 4Ab "
-                        f"= {4*Ab:.2f} in²")
+        warnings.append(f"Headed bar: Abrg = {head_net_bearing_area} in2 < 4Ab "
+                        f"= {4*Ab:.2f} in2")
     if obstruction_dist is not None and obstruction_dist > 2 * db:
         warnings.append("Headed bar: obstruction extends more than 2db from the "
                         "bearing face - HA head requirement not met")
     if fc > 6000:
         warnings.append("Headed bar: f'c = 6000 psi used (Code limit)")
     return dict(psi_e=pe, fc_used=fc_used, ldt_raw=ldt)
+
+
+# Bar in compression - Eqs. 6.10a, 6.10b - Table 6.4 (ACI 25.4.9)
+def compression():
+    pr = 0.75 if comp_confined else 1.0
+    ldc_a = fy / (50 * lam * sqrt_fc) * db           # Eq. 6.10a
+    ldc_b = 0.0003 * fy * db                         # Eq. 6.10b
+    ldc_basic = max(ldc_a, ldc_b)                    # the greater of the two
+    # psi_r (and the excess-reinforcement factor) are modification factors
+    # applied to this basic ldc (Table 6.4 B / ACI 25.4.10.1)
+    warnings.append("Compression: hooks and heads are NOT effective in compression "
+                    "- disregard them when determining embedment length")
+    return dict(psi_r=pr, ldc_a=ldc_a, ldc_b=ldc_b, ldc_basic=ldc_basic)
+
+
+# Table A.11 (CSV) - compression development length
+def load_table_a11(path=CSV_FILE_A11):
+    data = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            key = (int(row["bar_no"]), float(row["fy_ksi"]), float(row["fc_psi"]))
+            data[key] = (float(row["ldc_basic"]), float(row["ldc_confined"]))
+    return data
+
+
+def table_a11():
+    data = load_table_a11()
+    if bar_no not in {k[0] for k in data}:
+        raise ValueError(f"Bar No. {bar_no} is not in Table A.11")
+    sub = {k[1:]: v for k, v in data.items() if k[0] == bar_no}
+    idx = 1 if comp_confined else 0          # 0 = Basic, 1 = Confined
+    fy_ksi = fy / 1000.0
+    fy0, fy1 = _bracket({k[0] for k in sub}, fy_ksi, "fy (ksi)")
+    fc0, fc1 = _bracket({k[1] for k in sub}, fc, "f'c (psi)")
+
+    def v(a, b):
+        return sub[(a, b)][idx]
+
+    low = _lin(fc, fc0, fc1, v(fy0, fc0), v(fy0, fc1))
+    high = _lin(fc, fc0, fc1, v(fy1, fc0), v(fy1, fc1))
+    ldc = _lin(fy_ksi, fy0, fy1, low, high)
+    return dict(column="Confined" if comp_confined else "Basic", ldc=ldc,
+                exact=(fy0 == fy1 and fc0 == fc1))
 
 
 # Compare the required length with available_length (if given).
@@ -289,19 +342,20 @@ def check_available(required, label):
 
 
 def main():
-    if mode not in ("straight", "hook", "headed", "all"):
-        raise ValueError('mode must be "straight", "hook", "headed" or "all"')
-    r = reduction() if mode in ("straight", "hook", "all") else 1.0
+    if mode not in ("straight", "hook", "headed", "compression", "all"):
+        raise ValueError('mode must be "straight", "hook", "headed", '
+                         '"compression" or "all"')
+    r = reduction() if mode in ("straight", "hook", "compression", "all") else 1.0
 
     print("=" * 64)
     print(f"Mode: {mode}")
-    print(f"Bar No. {bar_no} (db = {db:.3f} in., Ab = {Ab} in²)   "
+    print(f"Bar No. {bar_no} (db = {db:.3f} in., Ab = {Ab} in2)   "
           f"fy = {fy} psi   f'c = {fc} psi")
-    line = f"λ = {lam:.3f}   coating = {coating}"
+    line = f"lambda = {lam:.3f}   coating = {coating}"
     if mode in ("straight", "all"):
-        line += f"   {'Top' if top_bar else 'Bottom'} bar (ψt = {psi_t()})"
+        line += f"   {'Top' if top_bar else 'Bottom'} bar (psi_t = {psi_t()})"
     print(line)
-    if mode in ("straight", "hook", "all"):
+    if mode in ("straight", "hook", "compression", "all"):
         print(f"As,req/As,prov reduction factor = {r:.3f}"
               f"{'  (not applicable)' if no_reduction_case else ''}")
     print("=" * 64)
@@ -313,7 +367,8 @@ def main():
         print("\n[1] STRAIGHT BAR - Table 6.1 / Eq. (6.5a, 6.5b)")
         print(f"  Spacing case : {a['case']}   | group : "
               f"{'No.7 & larger' if large_group() else 'No.6 & smaller'}")
-        print(f"  ψt = {a['psi_t']}, ψe = {a['psi_e']}, ψtψe = {a['psi_te']} (max 1.7)")
+        print(f"  psi_t = {a['psi_t']}, psi_e = {a['psi_e']}, "
+              f"psi_t*psi_e = {a['psi_te']} (max 1.7)")
         print(f"  ld/db = {a['ld_db']:.1f}   ->   ld = {a['ld']:.1f} in.")
         print(f"  Final (reduction + min 12 in.) : {ld1:.1f} in. = {ld1/12:.2f} ft")
         check_available(ld1, "Table 6.1")
@@ -339,12 +394,15 @@ def main():
         h = hooked()
         D, ext = hook_dimensions()
         print("\n[3] STANDARD HOOK - Eq. (6.6)")
-        print(f"  Hook dimension: {hook_type}° {'stirrup/tie' if is_stirrup_hook else 'main bar'}"
+        print(f"  Hook dimension: {hook_type} deg {'stirrup/tie' if is_stirrup_hook else 'main bar'}"
               f" | min inside bend dia D = {D:.2f} in."
               + (f" | extension >= {ext:.2f} in." if ext else ""))
-        if not is_stirrup_hook:
+        if not is_stirrup_hook and hook_type not in (90, 180):
+            print("  ldh not calculated: standard hooks for main bars are only 90 or 180 deg")
+        elif not is_stirrup_hook:
             ldh = max(h['ldh_raw'] * r, 8 * db, 6.0)
-            print(f"  ψe = {h['psi_e']}, ψc = {h['psi_c']}, ψr = {h['psi_r']}, λ = {lam:.2f}")
+            print(f"  psi_e = {h['psi_e']}, psi_c = {h['psi_c']}, psi_r = {h['psi_r']}, "
+                  f"lambda = {lam:.2f}")
             print(f"  ldh = {h['ldh_raw']:.1f} in.   ->   Final (reduction + "
                   f"min 8db, 6 in.) : {ldh:.1f} in.")
             check_available(ldh, "hook")
@@ -354,11 +412,48 @@ def main():
         t = headed()
         ldt = max(t['ldt_raw'], 8 * db, 6.0)
         print("\n[4] HEADED BAR - Eq. (6.7) / Table 6.3")
-        print(f"  ψe = {t['psi_e']}, f'c used = {t['fc_used']} psi")
+        print(f"  psi_e = {t['psi_e']}, f'c used = {t['fc_used']} psi")
         print(f"  ldt = {t['ldt_raw']:.1f} in.   ->   Final (min 8db, 6 in.; "
               f"no As reduction) : {ldt:.1f} in.")
         print("  (ldt is measured from the bearing face of the head to the critical section)")
         check_available(ldt, "headed bar")
+
+    if mode in ("compression", "all"):
+        # Compression
+        k = compression()
+        ldc_mod = k['ldc_basic'] * k['psi_r'] * r
+        ldc = max(ldc_mod, 8.0)
+        print("\n[5] BAR IN COMPRESSION - Eqs. (6.10a, 6.10b) / Table 6.4")
+        print(f"  lambda = {lam:.2f}")
+        print(f"  Eq. 6.10a : fy/(50*lambda*sqrt(f'c)) * db = {k['ldc_a']:.1f} in.")
+        print(f"  Eq. 6.10b : 0.0003*fy*db                  = {k['ldc_b']:.1f} in.")
+        print(f"  Basic ldc (greater) = {k['ldc_basic']:.1f} in.")
+        print(f"  x psi_r {k['psi_r']}"
+              f"{' (spiral / ties <= 4 in.)' if comp_confined else ''}"
+              f"  x excess-reinforcement factor {r:.3f}  ->  {ldc_mod:.1f} in.")
+        print(f"  Final (min 8 in.) : {ldc:.1f} in. = {ldc/12:.2f} ft")
+        check_available(ldc, "compression")
+
+        # Table A.11
+        print("\n[6] BAR IN COMPRESSION - Table A.11 (CSV)")
+        if lam != 1.0:
+            print("  ** Table A.11 is only for normalweight concrete **")
+        else:
+            try:
+                t = table_a11()
+                ldc6 = max(t['ldc'] * r, 8.0)
+                print(f"  Column: {t['column']} | "
+                      f"{'exact' if t['exact'] else 'interpolated'}")
+                print(f"  Table ldc = {t['ldc']:.1f} in.   x excess-reinforcement "
+                      f"factor {r:.3f}")
+                print(f"  Final (min 8 in.) : {ldc6:.1f} in. = {ldc6/12:.2f} ft")
+                check_available(ldc6, "Table A.11")
+                diff = ldc6 - ldc
+                print(f"  Comparison: Table A.11 = {ldc6:.1f} in.  vs  formula [5] = "
+                      f"{ldc:.1f} in.  ->  difference {diff:+.1f} in. "
+                      f"(table values are rounded up to whole inches)")
+            except (ValueError, FileNotFoundError, KeyError) as e:
+                print("  " + str(e))
 
     if warnings:
         print("\n--- WARNINGS ---")
