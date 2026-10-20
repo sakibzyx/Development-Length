@@ -12,7 +12,17 @@ function parseA10(text) {
   return d;
 }
 
-function calc(p, A10) {
+// Parse table_A11.csv text (bar_no,fy_ksi,fc_psi,ldc_basic,ldc_confined) -> {key: [basic, confined]}
+function parseA11(text) {
+  const d = {};
+  text.trim().split(/\r?\n/).slice(1).forEach(l => {
+    const [bar, fy, fc, b, c] = l.split(',');
+    d[[+bar, +fy, +fc].join('|')] = [+b, +c];
+  });
+  return d;
+}
+
+function calc(p, A10, A11) {
   const W = [], out = [];
   const db = BAR_DIA[p.bar_no], Ab = BAR_AREA[p.bar_no];
   const top = p.concrete_below_bar > 12, epoxy = p.coating === 'epoxy' || p.coating === 'dual';
@@ -42,6 +52,12 @@ function calc(p, A10) {
                    : `Check ${label}: available ${f1(p.available)} < required ${f1(req)} in. → NOT OK (short by ${f1(-d)} in.)`];
   };
 
+  const lin = (x, x0, x1, a0, a1) => x1 === x0 ? a0 : a0 + (a1 - a0) * (x - x0) / (x1 - x0);
+  const br = (vals, x, n) => {
+    if (x < vals[0] || x > vals[vals.length - 1]) throw new Error(`${n} = ${x} is outside the table range (${vals[0]}-${vals[vals.length - 1]})`);
+    return [Math.max(...vals.filter(v => v <= x)), Math.min(...vals.filter(v => v >= x))];
+  };
+
   // base straight-bar ld (Table 6.1), no reduction / minimum applied
   const t61 = () => {
     const pte = Math.min(pt * pe, 1.7);
@@ -65,13 +81,8 @@ function calc(p, A10) {
       const pos = top ? 'top' : 'bottom', cs = sc === 'other' ? 'other' : 'case_ab', g = large ? 'No7_larger' : 'No6_smaller';
       const keys = Object.keys(A10).map(k => k.split('|'));
       const uniq = i => [...new Set(keys.map(k => +k[i]))].sort((x, y) => x - y);
-      const br = (vals, x, n) => {
-        if (x < vals[0] || x > vals[vals.length - 1]) throw new Error(`${n} = ${x} is outside Table A.10 range (${vals[0]}-${vals[vals.length - 1]})`);
-        return [Math.max(...vals.filter(v => v <= x)), Math.min(...vals.filter(v => v >= x))];
-      };
       const fk = p.fy / 1000, [y0, y1] = br(uniq(3), fk, 'fy (ksi)'), [c0, c1] = br(uniq(4), p.fc, "f'c (psi)");
       const v = (y, c) => A10[[pos, cs, g, y, c].join('|')];
-      const lin = (x, x0, x1, a0, a1) => x1 === x0 ? a0 : a0 + (a1 - a0) * (x - x0) / (x1 - x0);
       const ldDb = lin(fk, y0, y1, lin(p.fc, c0, c1, v(y0, c0), v(y0, c1)), lin(p.fc, c0, c1, v(y1, c0), v(y1, c1)));
       const fin = Math.max(ldDb * db * r, 12);
       L.push(`${pos} bar | ${cs} | ${g} | ${(y0 === y1 && c0 === c1) ? 'exact' : 'interpolated'}`,
@@ -92,16 +103,22 @@ function calc(p, A10) {
       else if (p.hook_type === 180 && p.hook_conf) pr = 0.8;
     }
     // hook dimensions (Table 6.2)
-    let D = p.bar_no <= 8 ? 6 * db : p.bar_no <= 11 ? 8 * db : 10 * db, ext;
+    let D = p.bar_no <= 8 ? 6 * db : p.bar_no <= 11 ? 8 * db : 10 * db, ext = null;
     if (p.stirrup_hook && p.bar_no <= 5) D = 4 * db;
-    if (!p.stirrup_hook) ext = p.hook_type === 90 ? 12 * db : Math.max(4 * db, 2.5);
-    else {
+    if (!p.stirrup_hook) {
+      if (p.hook_type === 90) ext = 12 * db;
+      else if (p.hook_type === 180) ext = Math.max(4 * db, 2.5);
+      else W.push('Standard hook for main bars is only 90° or 180°');
+    } else {
       ext = p.hook_type === 90 ? (p.bar_no <= 5 ? Math.max(6 * db, 3) : 12 * db)
           : p.hook_type === 135 ? Math.max(6 * db, 3) : Math.max(4 * db, 2.5);
       if (p.bar_no > 8) W.push('Stirrup/tie hooks are only for No. 8 and smaller bars');
     }
-    const L = [`${p.hook_type}° ${p.stirrup_hook ? 'stirrup/tie' : 'main bar'} | min inside bend dia D = ${D.toFixed(2)} in. | extension ≥ ${ext.toFixed(2)} in.`];
-    if (!p.stirrup_hook) {
+    const L = [`${p.hook_type}° ${p.stirrup_hook ? 'stirrup/tie' : 'main bar'} | min inside bend dia D = ${D.toFixed(2)} in.` +
+      (ext !== null ? ` | extension ≥ ${ext.toFixed(2)} in.` : '')];
+    if (!p.stirrup_hook && p.hook_type !== 90 && p.hook_type !== 180) {
+      L.push('ldh not calculated: standard hooks for main bars are only 90° or 180°');
+    } else if (!p.stirrup_hook) {
       const raw = p.fy * pe_h * pc * pr / (50 * lam * sq) * db, fin = Math.max(raw * r, 8 * db, 6);
       L.push(`ψe = ${pe_h}, ψc = ${pc}, ψr = ${pr}, λ = ${lam}`,
         `ldh = ${f1(raw)} in. → Final (reduction + min 8db, 6 in.): ${f1(fin)} in.`, ...avail(fin, 'hook'));
@@ -128,17 +145,45 @@ function calc(p, A10) {
   }
 
   if (m === 'compression' || m === 'all') {
-    const raw = Math.max(0.02 * p.fy * db / (lam * sq), 0.0003 * p.fy * db), fin = Math.max(raw * r, 8);
-    out.push({ title: '[5] Compression development length', lines: [
-      `ldc = max(0.02·fy·db/(λ√f'c), 0.0003·fy·db) = ${f1(raw)} in.`,
-      `Final (reduction + min 8 in.): ${f1(fin)} in.`, ...avail(fin, 'compression')] });
+    // [5] Eqs. 6.10a, 6.10b / Table 6.4 : psi_r and the excess-reinforcement factor
+    // are modification factors applied to the greater of the two (as in Table A.11)
+    const ldA = p.fy * db / (50 * lam * sq), ldB = 0.0003 * p.fy * db, basic = Math.max(ldA, ldB);
+    const psr = p.comp_conf ? 0.75 : 1, mod = basic * psr * r, fin = Math.max(mod, 8);
+    W.push('Compression: hooks and heads are NOT effective in compression - disregard them when determining embedment length');
+    out.push({ title: '[5] Bar in compression - Eqs. (6.10a, 6.10b) / Table 6.4', lines: [
+      `λ = ${lam}`,
+      `Eq. 6.10a: fy/(50λ√f'c)·db = ${f1(ldA)} in.`,
+      `Eq. 6.10b: 0.0003·fy·db = ${f1(ldB)} in.`,
+      `Basic ldc (greater) = ${f1(basic)} in.`,
+      `× ψr ${psr}${p.comp_conf ? ' (spiral / ties ≤ 4 in.)' : ''} × excess-reinforcement factor ${r.toFixed(3)} → ${f1(mod)} in.`,
+      `Final (min 8 in.): ${f1(fin)} in. = ${(fin / 12).toFixed(2)} ft`, ...avail(fin, 'compression')], final: fin });
+
+    // [6] Table A.11 (CSV), interpolated on fy and f'c, compared with [5]
+    const L = [];
+    if (lam !== 1) L.push('Table A.11 is only for normalweight concrete');
+    else if (!A11) L.push('table_A11.csv not loaded');
+    else try {
+      const rows = Object.keys(A11).map(k => k.split('|').map(Number)).filter(k => k[0] === p.bar_no);
+      if (!rows.length) throw new Error(`Bar No. ${p.bar_no} is not in Table A.11`);
+      const uniq = i => [...new Set(rows.map(k => k[i]))].sort((x, y) => x - y);
+      const idx = p.comp_conf ? 1 : 0, fk = p.fy / 1000;
+      const [y0, y1] = br(uniq(1), fk, 'fy (ksi)'), [c0, c1] = br(uniq(2), p.fc, "f'c (psi)");
+      const v = (y, c) => A11[[p.bar_no, y, c].join('|')][idx];
+      const ld = lin(fk, y0, y1, lin(p.fc, c0, c1, v(y0, c0), v(y0, c1)), lin(p.fc, c0, c1, v(y1, c0), v(y1, c1)));
+      const fin6 = Math.max(ld * r, 8);
+      L.push(`Column: ${p.comp_conf ? 'Confined' : 'Basic'} | ${(y0 === y1 && c0 === c1) ? 'exact' : 'interpolated'}`,
+        `Table ldc = ${f1(ld)} in. × excess-reinforcement factor ${r.toFixed(3)}`,
+        `Final (min 8 in.): ${f1(fin6)} in. = ${(fin6 / 12).toFixed(2)} ft`, ...avail(fin6, 'Table A.11'),
+        `Comparison: Table A.11 = ${f1(fin6)} in. vs formula [5] = ${f1(fin)} in. → difference ${(fin6 - fin >= 0 ? '+' : '') + f1(fin6 - fin)} in. (table values are rounded up to whole inches)`);
+    } catch (e) { L.push(e.message); }
+    out.push({ title: '[6] Bar in compression - Table A.11', lines: L });
   }
 
   if (m === 'splice' || m === 'all') {
     const a = t61(), ratio = (has(p.As_req) && has(p.As_prov) && p.As_req > 0) ? p.As_prov / p.As_req : null;
     const classA = ratio !== null && ratio >= 2 && p.pct_spliced <= 50;
     const fin = Math.max(a.ld * (classA ? 1 : 1.3), 12);
-    out.push({ title: '[6] Tension lap splice (Table 6.1 ld; no As reduction)', lines: [
+    out.push({ title: '[7] Tension lap splice (Table 6.1 ld; no As reduction)', lines: [
       `ld = ${f1(a.ld)} in. | As,prov/As,req = ${ratio === null ? 'not given → Class B' : ratio.toFixed(2)} | spliced = ${p.pct_spliced}%`,
       `Class ${classA ? 'A (1.0 ld)' : 'B (1.3 ld)'} → splice length (min 12 in.): ${f1(fin)} in. = ${(fin / 12).toFixed(2)} ft`, ...avail(fin, 'splice')] });
   }
@@ -146,4 +191,4 @@ function calc(p, A10) {
   return { head, out, warnings: [...new Set(W)] };
 }
 
-if (typeof module !== 'undefined') module.exports = { calc, parseA10 };
+if (typeof module !== 'undefined') module.exports = { calc, parseA10, parseA11 };
